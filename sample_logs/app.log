@@ -1,0 +1,7 @@
+{"timestamp": "2026-05-19T10:00:01Z", "level": "INFO", "message": "Server started on port 8000", "service": "auth-service"}
+{"timestamp": "2026-05-19T10:00:05Z", "level": "INFO", "message": "Database connection established", "service": "auth-service"}
+{"timestamp": "2026-05-19T10:01:10Z", "level": "INFO", "message": "POST /auth/login 200 OK", "service": "auth-service", "duration_ms": 45}
+{"timestamp": "2026-05-19T10:02:33Z", "level": "ERROR", "message": "AttributeError: 'NoneType' object has no attribute 'email'", "service": "auth-service", "traceback": "File \"app/services/auth_service.py\", line 34, in login_user\n    return user.email\nAttributeError: 'NoneType' object has no attribute 'email'", "request_id": "req-abc-001"}
+{"timestamp": "2026-05-19T10:03:01Z", "level": "INFO", "message": "GET /health 200 OK", "service": "auth-service"}
+{"timestamp": "2026-05-19T10:05:45Z", "level": "ERROR", "message": "sqlalchemy.exc.OperationalError: connection pool exhausted", "service": "user-service", "traceback": "File \"app/db/session.py\", line 31, in get_session\n    session = SessionLocal()\nsqlalchemy.exc.OperationalError: QueuePool limit of size 5 overflow 10 reached", "request_id": "req-def-002"}
+{"timestamp": "2026-05-19T10:06:10Z", "level": "CRITICAL", "message": "Redis connection refused — cache unavailable", "service": "cache-service", "host": "redis:6379", "errno": 111}
