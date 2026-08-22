@@ -26,15 +26,18 @@ import streamlit as st
 
 # Streamlit Cloud secrets -> environment, so app.config picks them up.
 if hasattr(st, "secrets"):
-    try:
-        if "GROQ_API_KEY" in st.secrets and not os.getenv("GROQ_API_KEY"):
-            os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
-    except Exception:
-        pass
+    for _key in ("GROQ_API_KEY", "SMTP_USERNAME", "SMTP_APP_PASSWORD", "NOTIFY_EMAIL"):
+        try:
+            if _key in st.secrets and not os.getenv(_key):
+                os.environ[_key] = st.secrets[_key]
+        except Exception:
+            pass
 
 from app.indexer.service import IndexingService
 from app.analyzer.two_step_analyzer import TwoStepAnalyzer
 from app.models import ErrorEvent
+from app.jira.client import JiraClient
+from app.notifier.email_notifier import notify_ticket_created, is_configured as email_configured
 import uuid
 from datetime import datetime, timezone
 
@@ -66,6 +69,8 @@ if "index" not in st.session_state:
     st.session_state.index = None
 if "result" not in st.session_state:
     st.session_state.result = None
+if "jira_ticket" not in st.session_state:
+    st.session_state.jira_ticket = None  # (ticket_id, ticket_url) once created for the current result
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -92,6 +97,18 @@ with st.sidebar:
         if st.button("Clear index"):
             st.session_state.index = None
             st.rerun()
+
+    st.divider()
+    st.subheader("2. JIRA (optional)")
+    st.caption(
+        "Enter your own JIRA Cloud credentials to try real ticket creation. "
+        "Used only for this session — never stored or logged."
+    )
+    jira_base_url = st.text_input("JIRA base URL", placeholder="https://yourorg.atlassian.net")
+    jira_email = st.text_input("JIRA account email", placeholder="you@yourorg.com")
+    jira_api_token = st.text_input("JIRA API token", type="password", help="Create one at id.atlassian.com/manage-profile/security/api-tokens")
+    jira_project_key = st.text_input("JIRA project key", placeholder="PROJ")
+    jira_configured = all([jira_base_url, jira_email, jira_api_token, jira_project_key])
 
     st.divider()
     from app.config import settings as _settings
@@ -151,6 +168,7 @@ if analyze_clicked:
             else:
                 analyzed = asyncio.run(analyzer.analyze_without_index(event))
             st.session_state.result = analyzed
+            st.session_state.jira_ticket = None  # new analysis — clear any ticket from a previous one
     except Exception as exc:
         st.error(f"Analysis failed: {exc}")
         st.session_state.result = None
@@ -185,3 +203,39 @@ if result:
 
     if result.step2.affected_components:
         st.caption("Affected components: " + ", ".join(result.step2.affected_components))
+
+    st.divider()
+    st.subheader("JIRA ticket")
+
+    if st.session_state.jira_ticket:
+        ticket_id, ticket_url = st.session_state.jira_ticket
+        st.success(f"Ticket created: [{ticket_id}]({ticket_url})")
+    elif not jira_configured:
+        st.info("Fill in your JIRA credentials in the sidebar to create a real ticket from this analysis.")
+    else:
+        if st.button("🎫 Create JIRA Ticket"):
+            try:
+                with st.spinner("Creating ticket..."):
+                    jira = JiraClient(
+                        base_url=jira_base_url,
+                        email=jira_email,
+                        api_token=jira_api_token,
+                        project_key=jira_project_key,
+                    )
+                    ticket = asyncio.run(jira.create_ticket(result))
+                st.session_state.jira_ticket = (ticket.ticket_id, ticket.ticket_url)
+
+                log_entry = result.error.log_entry
+                notify_ticket_created(
+                    ticket_id=ticket.ticket_id,
+                    ticket_url=ticket.ticket_url,
+                    error_message=str(log_entry.get("message", ""))[:200],
+                    service=str(log_entry.get("service", "unknown")),
+                    severity=result.step2.severity,
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Ticket creation failed: {exc}")
+
+        if not email_configured():
+            st.caption("Owner notification email isn't configured on this deployment — ticket creation still works either way.")

@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # Log monitoring
     error_levels: list[str] = ["ERROR", "CRITICAL", "FATAL"]
 
+    # Email notifications (owner-side — sent when a visitor creates a JIRA
+    # ticket via the demo app; separate from any JIRA credentials the
+    # visitor supplies themselves)
+    smtp_username: str = ""       # sending Gmail address
+    smtp_app_password: str = ""   # Gmail App Password (not your normal password)
+    notify_email: str = ""        # where to send the notification — defaults to smtp_username if unset
+
     model_config = SettingsConfigDict(
         # Absolute paths — works regardless of working directory
         env_file=[

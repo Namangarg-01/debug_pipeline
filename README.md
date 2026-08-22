@@ -43,12 +43,28 @@ Python, FastAPI, Groq (`openai/gpt-oss-120b`), JIRA REST API v3, Streamlit, Pyda
 
 [`demo_app.py`](demo_app.py) is a self-contained Streamlit demo — it calls the indexer and two-step analyzer directly in-process, so it needs **no separate FastAPI server** and is deployable as-is on Streamlit Community Cloud. One click indexes this repo's own `app/` folder, then pick a sample error (or paste your own JSON log line) to run the real analysis pipeline.
 
+**JIRA ticket creation works in the demo too** — a visitor enters their own JIRA Cloud base URL, email, API token, and project key in the sidebar (session-only, never stored or logged), then a "Create JIRA Ticket" button turns the current analysis into a real ticket in *their* project. This keeps the public demo from creating tickets in your own JIRA when strangers try it.
+
+**Owner email notification (optional):** when any visitor successfully creates a ticket, you can get notified by email. Uses Gmail SMTP with an App Password:
+
+1. Enable 2-Step Verification on the Gmail account you want to send from (Google Account → Security)
+2. Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), create one for "Mail"
+3. Add to your `.env` (or Streamlit Cloud Secrets):
+
+```
+SMTP_USERNAME=you@gmail.com
+SMTP_APP_PASSWORD=the_16_char_app_password
+NOTIFY_EMAIL=you@gmail.com
+```
+
+If unset, the app works exactly the same — ticket creation just skips the notification (logged, never breaks the ticket-creation flow itself).
+
 ```bash
 pip install -r requirements.txt
 streamlit run demo_app.py
 ```
 
-**Deploying on Streamlit Community Cloud:** point the app at `demo_app.py`, and add `GROQ_API_KEY` under the app's Secrets.
+**Deploying on Streamlit Community Cloud:** point the app at `demo_app.py`, and add `GROQ_API_KEY` (required) plus `SMTP_USERNAME` / `SMTP_APP_PASSWORD` / `NOTIFY_EMAIL` (optional, for owner notifications) under the app's Secrets.
 
 ## Full setup (real-time monitoring + JIRA)
 
@@ -102,10 +118,11 @@ Interactive docs are available at `/docs` once the API is running.
 app/
 ├── analyzer/       # Two-step LLM analysis pipeline
 ├── indexer/        # Codebase parsers (Python/JS/TS/Java/Go) + index builder
-├── jira/           # JIRA ticket creation client
+├── jira/           # JIRA ticket creation client (accepts credential overrides for demo_app.py)
 ├── monitor/        # Log tailing / health-check watcher
+├── notifier/       # Gmail SMTP owner-notification email
 ├── routers/        # FastAPI endpoints (index, monitor)
-├── config.py       # Settings (Groq + JIRA credentials)
+├── config.py       # Settings (Groq, JIRA, SMTP credentials)
 └── main.py         # FastAPI app entrypoint
 frontend/
 └── streamlit_app.py    # Full dashboard — talks to the FastAPI backend over HTTP

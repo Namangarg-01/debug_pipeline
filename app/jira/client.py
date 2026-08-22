@@ -142,10 +142,21 @@ def _build_description(event: AnalyzedEvent) -> dict:
 
 class JiraClient:
 
-    def __init__(self) -> None:
-        self._auth    = (settings.jira_email, settings.jira_api_token)
-        self._base    = settings.jira_base_url.rstrip("/")
-        self._proj    = settings.jira_project_key
+    def __init__(
+        self,
+        base_url: str | None = None,
+        email: str | None = None,
+        api_token: str | None = None,
+        project_key: str | None = None,
+    ) -> None:
+        """
+        Defaults to settings (.env) — used by the FastAPI backend. Pass explicit
+        overrides to use different credentials at call time, e.g. a Streamlit
+        demo letting each visitor supply their own JIRA project.
+        """
+        self._auth    = (email or settings.jira_email, api_token or settings.jira_api_token)
+        self._base    = (base_url or settings.jira_base_url).rstrip("/")
+        self._proj    = project_key or settings.jira_project_key
         self._headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
     # ── Public ─────────────────────────────────────────────────────────────────
