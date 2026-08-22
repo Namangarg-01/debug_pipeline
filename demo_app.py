@@ -76,10 +76,16 @@ with st.sidebar:
     st.caption("Index this repo's own `app/` folder so the analyzer can cite real suspect functions and source code.")
     if st.session_state.index is None:
         if st.button("📂 Index this repo's app/ folder"):
-            with st.spinner("Indexing..."):
-                index = asyncio.run(IndexingService(REPO_ROOT / "app").run())
-                st.session_state.index = index
-            st.rerun()
+            try:
+                with st.spinner("Indexing..."):
+                    index = asyncio.run(IndexingService(REPO_ROOT / "app").run())
+                if index.summary.total_files == 0:
+                    st.warning("No source files found to index.")
+                else:
+                    st.session_state.index = index
+                    st.rerun()
+            except Exception as exc:
+                st.error(f"Indexing failed: {exc}")
     else:
         idx = st.session_state.index
         st.success(f"Indexed: {idx.summary.total_files} files, {idx.summary.total_functions} functions")
@@ -116,10 +122,18 @@ raw_json = st.text_area("Error log entry (JSON)", value=default_json, height=180
 analyze_clicked = st.button("🧠 Analyze", type="primary")
 
 if analyze_clicked:
+    if not raw_json or not raw_json.strip():
+        st.error("Paste a JSON error log entry first.")
+        st.stop()
+
     try:
         log_entry = json.loads(raw_json)
     except json.JSONDecodeError as exc:
         st.error(f"Invalid JSON: {exc}")
+        st.stop()
+
+    if not isinstance(log_entry, dict):
+        st.error("The log entry must be a JSON object, e.g. {\"message\": \"...\", \"service\": \"...\"} — not a bare string, number, or list.")
         st.stop()
 
     event = ErrorEvent(
@@ -129,13 +143,17 @@ if analyze_clicked:
         detected_at=datetime.now(timezone.utc).isoformat(),
     )
 
-    with st.spinner("Running two-step LLM analysis..."):
-        analyzer = TwoStepAnalyzer(index=st.session_state.index)
-        if st.session_state.index is not None:
-            analyzed = asyncio.run(analyzer.analyze(event))
-        else:
-            analyzed = asyncio.run(analyzer.analyze_without_index(event))
-        st.session_state.result = analyzed
+    try:
+        with st.spinner("Running two-step LLM analysis..."):
+            analyzer = TwoStepAnalyzer(index=st.session_state.index)
+            if st.session_state.index is not None:
+                analyzed = asyncio.run(analyzer.analyze(event))
+            else:
+                analyzed = asyncio.run(analyzer.analyze_without_index(event))
+            st.session_state.result = analyzed
+    except Exception as exc:
+        st.error(f"Analysis failed: {exc}")
+        st.session_state.result = None
 
 result = st.session_state.result
 if result:

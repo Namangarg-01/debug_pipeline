@@ -22,6 +22,35 @@ router = APIRouter()
 
 INDEX_SAVE_PATH = Path("backend_index.json")
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024       # 50 MB compressed
+MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024  # 500 MB decompressed — zip-bomb guard
+MAX_ZIP_ENTRIES = 20_000
+
+
+def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
+    """
+    Extracts a ZIP after validating every member — rejects:
+      - "Zip Slip" entries whose resolved path would land outside `dest`
+        (via ../ sequences or absolute paths)
+      - archives that are absurdly large once decompressed (zip bombs)
+      - archives with an unreasonable number of entries
+    """
+    infos = zf.infolist()
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise HTTPException(400, f"ZIP has too many entries (max {MAX_ZIP_ENTRIES}).")
+
+    total_uncompressed = sum(i.file_size for i in infos)
+    if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
+        raise HTTPException(400, "ZIP is too large once decompressed (possible zip bomb).")
+
+    dest_resolved = dest.resolve()
+    for info in infos:
+        member_path = (dest / info.filename).resolve()
+        if not (member_path == dest_resolved or dest_resolved in member_path.parents):
+            raise HTTPException(400, f"Refusing to extract unsafe path in ZIP: {info.filename!r}")
+
+    zf.extractall(dest)
+
 
 @router.post("/index/upload", response_model=BackendIndex, tags=["Index"])
 async def index_from_upload(
@@ -37,13 +66,20 @@ async def index_from_upload(
         extract_path.mkdir()
 
         try:
-            zip_path.write_bytes(await file.read())
+            contents = await file.read()
         except Exception as exc:
             raise HTTPException(400, f"Failed to read upload: {exc}")
 
+        if len(contents) > MAX_UPLOAD_BYTES:
+            raise HTTPException(400, f"Upload too large (max {MAX_UPLOAD_BYTES // (1024*1024)} MB).")
+        if not contents:
+            raise HTTPException(400, "Uploaded file is empty.")
+
+        zip_path.write_bytes(contents)
+
         try:
             with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(extract_path)
+                _safe_extract(zf, extract_path)
         except zipfile.BadZipFile:
             raise HTTPException(400, "Invalid ZIP archive.")
 

@@ -111,15 +111,15 @@ class StartMonitorRequest(BaseModel):
         description="URL to poll for health checks. Required when monitor_type is 'health'.",
     )
     check_interval_sec: int = Field(
-        3,
+        3, ge=1, le=3600,
         description="Seconds between health check requests.",
     )
     failure_threshold: int = Field(
-        3,
+        3, ge=1, le=100,
         description="Number of failed health checks required before ticket creation.",
     )
     failure_window_sec: int = Field(
-        10,
+        10, ge=1, le=3600,
         description="Sliding window in seconds for counting failed checks.",
     )
 

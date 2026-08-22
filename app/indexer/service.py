@@ -27,6 +27,7 @@ _PARSERS = {
 }
 
 MAX_CONCURRENT = 20
+MAX_FILES = 8000  # safety cap — prevents a huge/misconfigured path from hanging the server
 
 
 def _parse_sync(file_path: Path, language: str, rel_path: str) -> FileIndex:
@@ -68,6 +69,14 @@ class IndexingService:
     async def run(self) -> BackendIndex:
         source_files = list(iter_source_files(self.root))
         logger.info("Discovered %d source files under %s", len(source_files), self.root)
+
+        truncated = len(source_files) > MAX_FILES
+        if truncated:
+            logger.warning(
+                "Found %d source files, capping at %d to avoid hanging the server",
+                len(source_files), MAX_FILES,
+            )
+            source_files = source_files[:MAX_FILES]
 
         sem = asyncio.Semaphore(MAX_CONCURRENT)
         loop = asyncio.get_running_loop()

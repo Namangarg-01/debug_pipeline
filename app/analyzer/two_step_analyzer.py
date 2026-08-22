@@ -29,6 +29,17 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+MAX_LOG_ENTRY_CHARS = 8000  # guards against a caller pasting an oversized/malformed log entry
+
+
+def _format_log_entry(log_entry: dict[str, Any]) -> str:
+    """JSON-formats a log entry, truncating if some field is unexpectedly huge."""
+    text = json.dumps(log_entry, indent=2, default=str)
+    if len(text) > MAX_LOG_ENTRY_CHARS:
+        text = text[:MAX_LOG_ENTRY_CHARS] + "\n... [truncated — log entry too large]"
+    return text
+
+
 # ── System prompts ─────────────────────────────────────────────────────────────
 
 _STEP1_SYSTEM = """
@@ -186,7 +197,7 @@ class TwoStepAnalyzer:
         user_msg = (
             "## Production Error Log Entry\n"
             "```json\n"
-            f"{json.dumps(event.log_entry, indent=2)}\n"
+            f"{_format_log_entry(event.log_entry)}\n"
             "```\n\n"
             "Analyse this error thoroughly. Use the error message, traceback, "
             "service name, and any other fields in the JSON to identify the root cause "
@@ -241,7 +252,7 @@ class TwoStepAnalyzer:
 
         user_msg = (
             f"## Error Log Entry\n```json\n"
-            f"{json.dumps(event.log_entry, indent=2)}\n```\n\n"
+            f"{_format_log_entry(event.log_entry)}\n```\n\n"
             f"## Function Index ({len(fn_index_lines)} functions)\n"
             + "\n".join(fn_index_lines[:150])  # cap to ~150 functions to fit context
         )
@@ -258,14 +269,18 @@ class TwoStepAnalyzer:
     # ── Step 2 ─────────────────────────────────────────────────────────────────
 
     async def _step2_analyze(self, event: ErrorEvent, step1: Step1Result) -> Step2Result:
+        MAX_SOURCE_CHARS = 6000  # per function — guards against huge/generated files blowing the context budget
         code_blocks: list[str] = []
         for fn_name in step1.suspected_functions[:6]:
             if fn_name in self._fn_map:
                 fn_info, file_path = self._fn_map[fn_name]
+                source = fn_info.source_code
+                if len(source) > MAX_SOURCE_CHARS:
+                    source = source[:MAX_SOURCE_CHARS] + "\n... [truncated — function too large to include in full]"
                 code_blocks.append(
                     f"### `{fn_name}` — {file_path}\n"
                     f"**Description**: {fn_info.description}\n"
-                    f"```\n{fn_info.source_code}\n```"
+                    f"```\n{source}\n```"
                 )
 
         if not code_blocks:
@@ -273,7 +288,7 @@ class TwoStepAnalyzer:
 
         user_msg = (
             f"## Production Error\n```json\n"
-            f"{json.dumps(event.log_entry, indent=2)}\n```\n\n"
+            f"{_format_log_entry(event.log_entry)}\n```\n\n"
             f"## Step 1 Reasoning\n{step1.reasoning}\n\n"
             f"## Suspected Function Source Code\n"
             + "\n\n".join(code_blocks)

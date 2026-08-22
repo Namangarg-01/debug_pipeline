@@ -26,6 +26,15 @@ The JIRA ticket is created with the complete analysis embedded in the descriptio
 - **Non-blocking pipeline** — errors are queued and analyzed as background tasks (one LLM call at a time via a semaphore) so the log watcher is never blocked.
 - **Streamlit dashboard** — live view of indexed functions, monitor status, and analyzed events.
 
+## Robustness
+
+- **ZIP upload is validated against "Zip Slip"** — every archive member's resolved path is checked to stay inside the extraction directory before extracting, plus caps on entry count and decompressed size (zip-bomb guard) and upload size.
+- **Function source code and log entries are truncated before hitting the LLM** — an unexpectedly huge function body or a caller-supplied oversized log entry gets capped rather than blowing the context budget or making requests slow/expensive.
+- **`IndexingService` caps the number of files it will index** (8,000) so an accidental point at a huge or misconfigured directory can't hang the server.
+- **Groq calls already retried transient failures** (rate limit, connection, 5xx) with backoff — verified this still works correctly after the above changes.
+- **`demo_app.py` validates all user input**: rejects empty submissions, invalid JSON, and JSON that parses but isn't an object (a bare string/number/list) — all with a clear message, no crash. Indexing and analysis failures are caught and shown as errors instead of an unhandled traceback.
+- **Monitor start-up parameters are bounds-checked** (`check_interval_sec`, `failure_threshold`, `failure_window_sec` all require positive values) — a negative interval used to crash the background health-check task silently; it's now rejected upfront with a 422.
+
 ## Tech stack
 
 Python, FastAPI, Groq (`openai/gpt-oss-120b`), JIRA REST API v3, Streamlit, Pydantic.
