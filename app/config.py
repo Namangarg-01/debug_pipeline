@@ -7,7 +7,7 @@ _ROOT = Path(__file__).parent.parent
 class Settings(BaseSettings):
     # Groq LLM
     groq_api_key: str = "YOUR_GROQ_API_KEY"
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
     groq_temperature: float = 0.2
     groq_max_tokens: int = 2048
     groq_timeout: int = 60

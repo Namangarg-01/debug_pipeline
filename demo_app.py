@@ -1,0 +1,169 @@
+"""
+Debug Pipeline — Streamlit demo UI
+===================================
+A self-contained demo that calls the indexing + two-step LLM analysis
+pipeline directly in-process (no separate FastAPI server needed), so this
+one file is enough to demo or deploy on Streamlit Community Cloud.
+
+The full app (real-time log tailing, JIRA ticket creation, live monitoring)
+still lives in app/main.py + frontend/streamlit_app.py and needs a running
+FastAPI backend — see README.md. This demo covers the core "index a
+codebase, analyze one error" flow synchronously, which is what a reviewer
+clicking a live link actually wants to see.
+
+Run locally:
+    streamlit run demo_app.py
+
+Deploy on Streamlit Cloud:
+    Set GROQ_API_KEY as an app secret (Settings -> Secrets).
+"""
+import asyncio
+import json
+import os
+from pathlib import Path
+
+import streamlit as st
+
+# Streamlit Cloud secrets -> environment, so app.config picks them up.
+if hasattr(st, "secrets"):
+    try:
+        if "GROQ_API_KEY" in st.secrets and not os.getenv("GROQ_API_KEY"):
+            os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+    except Exception:
+        pass
+
+from app.indexer.service import IndexingService
+from app.analyzer.two_step_analyzer import TwoStepAnalyzer
+from app.models import ErrorEvent
+import uuid
+from datetime import datetime, timezone
+
+st.set_page_config(page_title="Debug Pipeline — Demo", page_icon="🔍", layout="wide")
+
+REPO_ROOT = Path(__file__).parent
+SAMPLE_LOG = REPO_ROOT / "sample_logs" / "app.log"
+
+
+def _load_sample_errors() -> list[dict]:
+    if not SAMPLE_LOG.exists():
+        return []
+    entries = []
+    for line in SAMPLE_LOG.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if str(entry.get("level", "")).upper() in ("ERROR", "CRITICAL", "FATAL"):
+            entries.append(entry)
+    return entries
+
+
+# ── Session state ────────────────────────────────────────────────────────────
+if "index" not in st.session_state:
+    st.session_state.index = None
+if "result" not in st.session_state:
+    st.session_state.result = None
+
+# ── Sidebar ──────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.title("🔍 Debug Pipeline")
+    st.caption("Automated backend error detection & root-cause analysis")
+
+    st.subheader("1. Codebase index (optional)")
+    st.caption("Index this repo's own `app/` folder so the analyzer can cite real suspect functions and source code.")
+    if st.session_state.index is None:
+        if st.button("📂 Index this repo's app/ folder"):
+            with st.spinner("Indexing..."):
+                index = asyncio.run(IndexingService(REPO_ROOT / "app").run())
+                st.session_state.index = index
+            st.rerun()
+    else:
+        idx = st.session_state.index
+        st.success(f"Indexed: {idx.summary.total_files} files, {idx.summary.total_functions} functions")
+        if st.button("Clear index"):
+            st.session_state.index = None
+            st.rerun()
+
+    st.divider()
+    from app.config import settings as _settings
+    if not _settings.groq_api_key or _settings.groq_api_key == "YOUR_GROQ_API_KEY":
+        st.error("GROQ_API_KEY is not set. Add it to a .env file locally, or to Streamlit secrets when deployed.")
+
+st.title("Analyze a production error")
+st.caption("Pick a sample error, or paste your own JSON log line, then run the two-step LLM root-cause analysis.")
+
+samples = _load_sample_errors()
+sample_labels = [f"{e.get('service', '?')} — {str(e.get('message', ''))[:70]}" for e in samples]
+
+col1, col2 = st.columns([1, 1])
+with col1:
+    choice = st.selectbox("Sample errors (from sample_logs/app.log)", ["— custom —"] + sample_labels)
+
+if choice != "— custom —":
+    default_json = json.dumps(samples[sample_labels.index(choice)], indent=2)
+else:
+    default_json = json.dumps({
+        "message": "TypeError: cannot unpack non-iterable NoneType object",
+        "service": "checkout-api",
+        "level": "ERROR",
+    }, indent=2)
+
+raw_json = st.text_area("Error log entry (JSON)", value=default_json, height=180)
+
+analyze_clicked = st.button("🧠 Analyze", type="primary")
+
+if analyze_clicked:
+    try:
+        log_entry = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        st.error(f"Invalid JSON: {exc}")
+        st.stop()
+
+    event = ErrorEvent(
+        id=str(uuid.uuid4()),
+        raw_line=raw_json,
+        log_entry=log_entry,
+        detected_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    with st.spinner("Running two-step LLM analysis..."):
+        analyzer = TwoStepAnalyzer(index=st.session_state.index)
+        if st.session_state.index is not None:
+            analyzed = asyncio.run(analyzer.analyze(event))
+        else:
+            analyzed = asyncio.run(analyzer.analyze_without_index(event))
+        st.session_state.result = analyzed
+
+result = st.session_state.result
+if result:
+    st.divider()
+    sev_color = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(result.step2.severity, "⚪")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Severity", f"{sev_color} {result.step2.severity}")
+    c2.metric("Confidence", f"{result.step2.confidence_score:.0%}")
+    c3.metric("Suspected functions", len(result.step1.suspected_functions) or "—")
+
+    st.subheader("Root cause")
+    st.write(result.step2.root_cause)
+
+    st.subheader("Technical explanation")
+    st.write(result.step2.technical_explanation)
+
+    st.subheader("Debugging steps")
+    for step in result.step2.debugging_steps:
+        st.markdown(f"- {step}")
+
+    st.subheader("Possible fixes")
+    for fix in result.step2.possible_fixes:
+        st.markdown(f"- {fix}")
+
+    if result.step1.suspected_functions:
+        with st.expander(f"Suspected functions ({len(result.step1.suspected_functions)})"):
+            st.write(", ".join(result.step1.suspected_functions))
+            st.caption(result.step1.reasoning)
+
+    if result.step2.affected_components:
+        st.caption("Affected components: " + ", ".join(result.step2.affected_components))

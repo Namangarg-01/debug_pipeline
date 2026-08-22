@@ -21,16 +21,29 @@ The JIRA ticket is created with the complete analysis embedded in the descriptio
 
 - **Codebase indexer** — parses Python, JavaScript/TypeScript, Java, and Go source into a function-level index (name, description, source, API routes, imports).
 - **Log or health-check monitoring** — tail a JSON log file for `ERROR`/`CRITICAL`/`FATAL` lines, or poll a URL and raise an event after repeated failures.
-- **Two-step LLM analysis** (Groq, `llama-3.3-70b-versatile`) — suspects functions first, then does a deep-dive on their actual source code.
+- **Two-step LLM analysis** (Groq, `openai/gpt-oss-120b`) — suspects functions first, then does a deep-dive on their actual source code.
 - **Automatic JIRA ticket creation** — falls back through Bug→Task issue types and drops the priority/description fields if the project rejects them, so ticket creation doesn't fail silently.
 - **Non-blocking pipeline** — errors are queued and analyzed as background tasks (one LLM call at a time via a semaphore) so the log watcher is never blocked.
 - **Streamlit dashboard** — live view of indexed functions, monitor status, and analyzed events.
 
 ## Tech stack
 
-Python, FastAPI, Groq (LLaMA 3.3), JIRA REST API v3, Streamlit, Pydantic.
+Python, FastAPI, Groq (`openai/gpt-oss-120b`), JIRA REST API v3, Streamlit, Pydantic.
 
-## Setup
+## Try it live
+
+[`demo_app.py`](demo_app.py) is a self-contained Streamlit demo — it calls the indexer and two-step analyzer directly in-process, so it needs **no separate FastAPI server** and is deployable as-is on Streamlit Community Cloud. One click indexes this repo's own `app/` folder, then pick a sample error (or paste your own JSON log line) to run the real analysis pipeline.
+
+```bash
+pip install -r requirements.txt
+streamlit run demo_app.py
+```
+
+**Deploying on Streamlit Community Cloud:** point the app at `demo_app.py`, and add `GROQ_API_KEY` under the app's Secrets.
+
+## Full setup (real-time monitoring + JIRA)
+
+The full system — live log tailing, health-check monitoring, and automatic JIRA ticket creation — runs as a FastAPI backend with a separate Streamlit dashboard talking to it over HTTP.
 
 ```bash
 pip install -r requirements.txt
@@ -86,6 +99,7 @@ app/
 ├── config.py       # Settings (Groq + JIRA credentials)
 └── main.py         # FastAPI app entrypoint
 frontend/
-└── streamlit_app.py
-log_generator/       # Fake log generator for local testing
+└── streamlit_app.py    # Full dashboard — talks to the FastAPI backend over HTTP
+demo_app.py              # Self-contained demo — deployable standalone, no backend needed
+log_generator/            # Fake log generator for local testing
 ```
