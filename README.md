@@ -13,30 +13,16 @@ Automated backend error detection and root-cause analysis. Watches a live log fi
 
 ```mermaid
 flowchart TD
-    LW[LogWatcher<br/>tail JSON log] -->|ERROR / CRITICAL / FATAL line| EE[ErrorEvent]
-    HC[health_check_loop<br/>poll URL] -->|N consecutive failures| EE
+    MON["Log file or health-check URL<br/>(LogWatcher / health_check_loop)"] -->|error detected| EE[ErrorEvent]
 
-    EE -->|"fire-and-forget task<br/>(watcher never blocks)"| SEM{{semaphore: 1 LLM call at a time}}
-    SEM --> IDXCHECK{Codebase indexed?}
+    EE -->|"non-blocking background task"| TSA["Two-step LLM analysis<br/>1. identify suspect functions<br/>2. root cause from their real source"]
 
-    IDXCHECK -->|yes| S1[Step 1 — identify suspects<br/>error + function-name index]
-    IDXCHECK -->|no| S1B[analyze_without_index<br/>error + traceback only]
+    TSA --> RESULT[AnalyzedEvent<br/>root cause · fixes · severity · confidence]
 
-    S1 --> S2[Step 2 — root-cause analysis<br/>real source of suspected functions]
-    S1B --> RESULT
+    RESULT --> STORE[(Stored — /monitor/events)]
+    RESULT --> JIRA["JIRA ticket created<br/>auto-retries if a field is rejected"]
 
-    S2 --> RESULT[AnalyzedEvent<br/>root cause · fixes · severity · confidence]
-
-    RESULT --> STORE[(state.add_event<br/>/monitor/events)]
-    RESULT --> JIRA[JiraClient.create_ticket]
-
-    JIRA -->|Bug + priority + description| T1{JIRA accepts?}
-    T1 -->|yes| TICKET[Ticket created]
-    T1 -->|400| T2[retry: Bug, no priority]
-    T2 -->|still fails| T3[retry: Task issue type]
-    T3 --> TICKET
-
-    TICKET -->|demo_app.py only| EMAIL[notify_ticket_created<br/>Gmail SMTP → owner]
+    JIRA -->|demo_app.py only| EMAIL[Email notification to owner]
 ```
 
 *(Renders automatically on GitHub. Node names above match the actual function names in [`monitor_router.py`](app/routers/monitor_router.py), [`two_step_analyzer.py`](app/analyzer/two_step_analyzer.py), and [`jira/client.py`](app/jira/client.py) 1:1.)*
