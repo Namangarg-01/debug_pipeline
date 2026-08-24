@@ -25,7 +25,16 @@ from pathlib import Path
 import streamlit as st
 
 # Streamlit Cloud secrets -> environment, so app.config picks them up.
-if hasattr(st, "secrets"):
+# Only touch st.secrets if a secrets.toml actually exists — accessing it
+# otherwise makes Streamlit render its own "No secrets found" error banner
+# directly into the app UI, which no try/except here can suppress (it's not
+# a normal Python exception). Running locally with a .env file — the
+# expected case — never needs this at all.
+_secrets_paths = [
+    Path.home() / ".streamlit" / "secrets.toml",
+    Path(__file__).parent / ".streamlit" / "secrets.toml",
+]
+if any(p.exists() for p in _secrets_paths):
     for _key in ("GROQ_API_KEY", "SMTP_USERNAME", "SMTP_APP_PASSWORD", "NOTIFY_EMAIL"):
         try:
             if _key in st.secrets and not os.getenv(_key):
