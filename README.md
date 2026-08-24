@@ -11,6 +11,36 @@ Automated backend error detection and root-cause analysis. Watches a live log fi
 4. A JIRA ticket is created       →  root cause, fixes, and debugging steps included
 ```
 
+```mermaid
+flowchart TD
+    LW[LogWatcher<br/>tail JSON log] -->|ERROR / CRITICAL / FATAL line| EE[ErrorEvent]
+    HC[health_check_loop<br/>poll URL] -->|N consecutive failures| EE
+
+    EE -->|"fire-and-forget task<br/>(watcher never blocks)"| SEM{{semaphore: 1 LLM call at a time}}
+    SEM --> IDXCHECK{Codebase indexed?}
+
+    IDXCHECK -->|yes| S1[Step 1 — identify suspects<br/>error + function-name index]
+    IDXCHECK -->|no| S1B[analyze_without_index<br/>error + traceback only]
+
+    S1 --> S2[Step 2 — root-cause analysis<br/>real source of suspected functions]
+    S1B --> RESULT
+
+    S2 --> RESULT[AnalyzedEvent<br/>root cause · fixes · severity · confidence]
+
+    RESULT --> STORE[(state.add_event<br/>/monitor/events)]
+    RESULT --> JIRA[JiraClient.create_ticket]
+
+    JIRA -->|Bug + priority + description| T1{JIRA accepts?}
+    T1 -->|yes| TICKET[Ticket created]
+    T1 -->|400| T2[retry: Bug, no priority]
+    T2 -->|still fails| T3[retry: Task issue type]
+    T3 --> TICKET
+
+    TICKET -->|demo_app.py only| EMAIL[notify_ticket_created<br/>Gmail SMTP → owner]
+```
+
+*(Renders automatically on GitHub. Node names above match the actual function names in [`monitor_router.py`](app/routers/monitor_router.py), [`two_step_analyzer.py`](app/analyzer/two_step_analyzer.py), and [`jira/client.py`](app/jira/client.py) 1:1.)*
+
 **Step 1 — Identify**: the error log entry + the function index (names, descriptions) go to the LLM, which returns the functions most likely responsible.
 
 **Step 2 — Analyze**: the actual source of those suspected functions is pulled from the index and sent back to the LLM for a full root-cause analysis — technical explanation, debugging steps, possible fixes, severity, and affected components.
