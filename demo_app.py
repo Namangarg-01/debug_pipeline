@@ -54,13 +54,21 @@ st.set_page_config(page_title="Debug Pipeline — Demo", page_icon="🔍", layou
 
 REPO_ROOT = Path(__file__).parent
 SAMPLE_LOG = REPO_ROOT / "sample_logs" / "app.log"
+# Small backend whose code produces the sample errors — indexed at start-up, never executed
+SAMPLE_BACKEND = REPO_ROOT / "sample_backend"
+
+
+@st.cache_resource(show_spinner="Loading the pre-built codebase index...")
+def _sample_index():
+    """Index the bundled sample backend once per server process (takes milliseconds)."""
+    return asyncio.run(IndexingService(SAMPLE_BACKEND).run())
 
 
 def _load_sample_errors() -> list[dict]:
     if not SAMPLE_LOG.exists():
         return []
     entries = []
-    for line in SAMPLE_LOG.read_text().splitlines():
+    for line in SAMPLE_LOG.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -75,7 +83,10 @@ def _load_sample_errors() -> list[dict]:
 
 # ── Session state ────────────────────────────────────────────────────────────
 if "index" not in st.session_state:
-    st.session_state.index = None
+    try:
+        st.session_state.index = _sample_index()  # visitors start with the index already loaded
+    except Exception:
+        st.session_state.index = None
 if "result" not in st.session_state:
     st.session_state.result = None
 if "jira_ticket" not in st.session_state:
@@ -86,26 +97,23 @@ with st.sidebar:
     st.title("🔍 Debug Pipeline")
     st.caption("Automated backend error detection & root-cause analysis")
 
-    st.subheader("1. Codebase index (optional)")
-    st.caption("Index this repo's own `app/` folder so the analyzer can cite real suspect functions and source code.")
-    if st.session_state.index is None:
-        if st.button("📂 Index this repo's app/ folder"):
-            try:
-                with st.spinner("Indexing..."):
-                    index = asyncio.run(IndexingService(REPO_ROOT / "app").run())
-                if index.summary.total_files == 0:
-                    st.warning("No source files found to index.")
-                else:
-                    st.session_state.index = index
-                    st.rerun()
-            except Exception as exc:
-                st.error(f"Indexing failed: {exc}")
-    else:
+    st.subheader("1. Codebase index")
+    st.caption("Pre-built index of the sample backend (`sample_backend/`: auth, user, database and cache code) "
+               "that the sample errors come from.")
+    if st.session_state.index is not None:
         idx = st.session_state.index
         st.success(f"Indexed: {idx.summary.total_files} files, {idx.summary.total_functions} functions")
-        if st.button("Clear index"):
+        if st.button("Turn off index (error-only analysis)"):
             st.session_state.index = None
             st.rerun()
+    else:
+        st.info("Index off — the analyzer works from the error message and traceback alone.")
+        if st.button("📂 Use the pre-built index"):
+            try:
+                st.session_state.index = _sample_index()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Indexing failed: {exc}")
 
     st.divider()
     st.subheader("2. JIRA (optional)")
@@ -126,6 +134,26 @@ with st.sidebar:
 
 st.title("Analyze a production error")
 st.caption("Pick a sample error, or paste your own JSON log line, then run the two-step LLM root-cause analysis.")
+
+# ── About ────────────────────────────────────────────────────────────────────
+try:
+    _s = _sample_index().summary
+    _index_size = f"{_s.total_files} files, {_s.total_functions} functions"
+except Exception:
+    _index_size = "a handful of files"
+
+with st.expander("ℹ️ About this demo", expanded=True):
+    st.markdown(
+        f"- **Already indexed:** the app ships with a small sample backend (auth, user, database and cache code; "
+        f"{_index_size}) that is indexed automatically, so the analyzer can pinpoint the suspect functions and "
+        "read their real source code. No upload needed.\n"
+        "- **Common test cases:** the sample errors are typical production failures from that backend: a `None` "
+        "user object, an exhausted database connection pool, and Redis going down. You can also paste your own "
+        "JSON log line.\n"
+        "- **Live AI results:** nothing is pre-written or cached. Each time you click **Analyze**, the error (and, "
+        f"with the index on, the suspect functions' source code) is sent to an LLM (Groq · `{_settings.groq_model}`), "
+        "and you see exactly what it returns, so the wording can differ between runs."
+    )
 
 samples = _load_sample_errors()
 sample_labels = [f"{e.get('service', '?')} — {str(e.get('message', ''))[:70]}" for e in samples]

@@ -57,7 +57,9 @@ Python, FastAPI, Groq (`openai/gpt-oss-120b`), JIRA REST API v3, Streamlit, Pyda
 
 ## Try it live
 
-[`demo_app.py`](demo_app.py) is a self-contained Streamlit demo — it calls the indexer and two-step analyzer directly in-process, so it needs **no separate FastAPI server** and is deployable as-is on Streamlit Community Cloud. One click indexes this repo's own `app/` folder, then pick a sample error (or paste your own JSON log line) to run the real analysis pipeline.
+**Live demo:** https://debugpipeline-t5cxntpzfdp6a6oe5zzrj7.streamlit.app/
+
+[`demo_app.py`](demo_app.py) is a self-contained Streamlit demo — it calls the indexer and two-step analyzer directly in-process, so it needs **no separate FastAPI server** and is deployable as-is on Streamlit Community Cloud. It ships with a pre-indexed sample backend ([`sample_backend/`](sample_backend): auth, user, database and cache code) and three common production errors from it ([`sample_logs/app.log`](sample_logs/app.log)), so you can pick an error and run the real analysis pipeline straight away — or paste your own JSON log line. Every result is generated live by the LLM; nothing is pre-written.
 
 **JIRA ticket creation works in the demo too** — a visitor enters their own JIRA Cloud base URL, email, API token, and project key in the sidebar (session-only, never stored or logged), then a "Create JIRA Ticket" button turns the current analysis into a real ticket in *their* project. This keeps the public demo from creating tickets in your own JIRA when strangers try it.
 
@@ -143,5 +145,6 @@ app/
 frontend/
 └── streamlit_app.py    # Full dashboard — talks to the FastAPI backend over HTTP
 demo_app.py              # Self-contained demo — deployable standalone, no backend needed
+sample_backend/           # Small sample backend behind the demo's sample errors (indexed, never run)
 log_generator/            # Fake log generator for local testing
 ```
