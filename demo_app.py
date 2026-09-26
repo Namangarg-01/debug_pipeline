@@ -20,6 +20,9 @@ Deploy on Streamlit Cloud:
 import asyncio
 import json
 import os
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -44,18 +47,19 @@ if any(p.exists() for p in _secrets_paths):
 
 from app.indexer.service import IndexingService
 from app.analyzer.two_step_analyzer import TwoStepAnalyzer
+from app.config import settings
 from app.models import ErrorEvent
+from app.utils.language_detector import EXTENSION_MAP
 from app.jira.client import JiraClient
 from app.notifier.email_notifier import notify_ticket_created, is_configured as email_configured
-import uuid
-from datetime import datetime, timezone
 
-st.set_page_config(page_title="Debug Pipeline — Demo", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="Debug Pipeline — AI Root-Cause Analysis", layout="wide")
 
 REPO_ROOT = Path(__file__).parent
 SAMPLE_LOG = REPO_ROOT / "sample_logs" / "app.log"
 # Small backend whose code produces the sample errors — indexed at start-up, never executed
 SAMPLE_BACKEND = REPO_ROOT / "sample_backend"
+CUSTOM = "Custom error (edit the JSON below)"
 
 
 @st.cache_resource(show_spinner="Loading the pre-built codebase index...")
@@ -82,41 +86,25 @@ def _load_sample_errors() -> list[dict]:
 
 
 # ── Session state ────────────────────────────────────────────────────────────
-if "index" not in st.session_state:
-    try:
-        st.session_state.index = _sample_index()  # visitors start with the index already loaded
-    except Exception:
-        st.session_state.index = None
-if "result" not in st.session_state:
-    st.session_state.result = None
-if "jira_ticket" not in st.session_state:
-    st.session_state.jira_ticket = None  # (ticket_id, ticket_url) once created for the current result
+st.session_state.setdefault("result", None)      # AnalyzedEvent from the last run
+st.session_state.setdefault("run_meta", None)    # {"seconds": float, "mode": "Index" | "Error-only"}
+st.session_state.setdefault("jira_ticket", None)  # (ticket_id, ticket_url) once created for the current result
+
+try:
+    sample_index = _sample_index()
+except Exception:
+    sample_index = None
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("🔍 Debug Pipeline")
-    st.caption("Automated backend error detection & root-cause analysis")
-
-    st.subheader("1. Codebase index")
-    st.caption("Pre-built index of the sample backend (`sample_backend/`: auth, user, database and cache code) "
-               "that the sample errors come from.")
-    if st.session_state.index is not None:
-        idx = st.session_state.index
-        st.success(f"Indexed: {idx.summary.total_files} files, {idx.summary.total_functions} functions")
-        if st.button("Turn off index (error-only analysis)"):
-            st.session_state.index = None
-            st.rerun()
-    else:
-        st.info("Index off — the analyzer works from the error message and traceback alone.")
-        if st.button("📂 Use the pre-built index"):
-            try:
-                st.session_state.index = _sample_index()
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Indexing failed: {exc}")
+    st.header("Settings")
+    use_index = st.toggle("Use the pre-built codebase index", value=sample_index is not None,
+                          disabled=sample_index is None,
+                          help="Off = the analyzer works from the error message and traceback alone.")
+    st.caption("Index of `sample_backend/` (auth, user, database and cache code), the code the sample errors come from.")
 
     st.divider()
-    st.subheader("2. JIRA (optional)")
+    st.subheader("JIRA (optional)")
     st.caption(
         "Enter your own JIRA Cloud credentials to try real ticket creation. "
         "Used only for this session — never stored or logged."
@@ -127,54 +115,78 @@ with st.sidebar:
     jira_project_key = st.text_input("JIRA project key", placeholder="PROJ")
     jira_configured = all([jira_base_url, jira_email, jira_api_token, jira_project_key])
 
-    st.divider()
-    from app.config import settings as _settings
-    if not _settings.groq_api_key or _settings.groq_api_key == "YOUR_GROQ_API_KEY":
+    if not settings.groq_api_key or settings.groq_api_key == "YOUR_GROQ_API_KEY":
+        st.divider()
         st.error("GROQ_API_KEY is not set. Add it to a .env file locally, or to Streamlit secrets when deployed.")
 
-st.title("Analyze a production error")
-st.caption("Pick a sample error, or paste your own JSON log line, then run the two-step LLM root-cause analysis.")
+index = sample_index if use_index else None
+samples = _load_sample_errors()
+summary = sample_index.summary if sample_index else None
 
-# ── About ────────────────────────────────────────────────────────────────────
-try:
-    _s = _sample_index().summary
-    _index_size = f"{_s.total_files} files, {_s.total_functions} functions"
-except Exception:
-    _index_size = "a handful of files"
+# ── Header ───────────────────────────────────────────────────────────────────
+st.title("Debug Pipeline — AI Root-Cause Analysis")
+st.caption(f"Two-step LLM analysis of production errors against an indexed codebase · "
+           f"Python, FastAPI, Groq ({settings.groq_model}), Streamlit")
 
-with st.expander("ℹ️ About this demo", expanded=True):
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("Indexed files", summary.total_files if summary else "—")
+k2.metric("Functions indexed", summary.total_functions if summary else "—")
+k3.metric("Sample errors", len(samples))
+k4.metric("Codebase index", "On" if index else "Off")
+k5.metric("Languages supported", len(set(EXTENSION_MAP.values())))
+
+index_size = f"{summary.total_files} files, {summary.total_functions} functions" if summary else "a handful of files"
+with st.expander("About this demo", expanded=True):
     st.markdown(
         f"- **Already indexed:** the app ships with a small sample backend (auth, user, database and cache code; "
-        f"{_index_size}) that is indexed automatically, so the analyzer can pinpoint the suspect functions and "
+        f"{index_size}) that is indexed automatically, so the analyzer can pinpoint the suspect functions and "
         "read their real source code. No upload needed.\n"
         "- **Common test cases:** the sample errors are typical production failures from that backend: a `None` "
         "user object, an exhausted database connection pool, and Redis going down. You can also paste your own "
         "JSON log line.\n"
         "- **Live AI results:** nothing is pre-written or cached. Each time you click **Analyze**, the error (and, "
-        f"with the index on, the suspect functions' source code) is sent to an LLM (Groq · `{_settings.groq_model}`), "
+        f"with the index on, the suspect functions' source code) is sent to an LLM (Groq · `{settings.groq_model}`), "
         "and you see exactly what it returns, so the wording can differ between runs."
     )
 
-samples = _load_sample_errors()
-sample_labels = [f"{e.get('service', '?')} — {str(e.get('message', ''))[:70]}" for e in samples]
+st.divider()
 
-col1, col2 = st.columns([1, 1])
-with col1:
-    choice = st.selectbox("Sample errors (from sample_logs/app.log)", ["— custom —"] + sample_labels)
+# ── Input + how it works ─────────────────────────────────────────────────────
+left, right = st.columns([3, 2], gap="large")
+with left:
+    st.subheader("Error to analyze")
+    labels = [f"{e.get('service', '?')} — {str(e.get('message', ''))[:70]}" for e in samples]
+    choice = st.selectbox("Sample error (from sample_logs/app.log)", labels + [CUSTOM])
+    if choice != CUSTOM:
+        default_json = json.dumps(samples[labels.index(choice)], indent=2)
+    else:
+        default_json = json.dumps({
+            "message": "TypeError: cannot unpack non-iterable NoneType object",
+            "service": "checkout-api",
+            "level": "ERROR",
+        }, indent=2)
+    raw_json = st.text_area("Error log entry (JSON)", value=default_json, height=220)
+    analyze_clicked = st.button("Analyze error", type="primary")
 
-if choice != "— custom —":
-    default_json = json.dumps(samples[sample_labels.index(choice)], indent=2)
-else:
-    default_json = json.dumps({
-        "message": "TypeError: cannot unpack non-iterable NoneType object",
-        "service": "checkout-api",
-        "level": "ERROR",
-    }, indent=2)
+with right:
+    st.subheader("How it works")
+    with st.container(border=True):
+        st.markdown(
+            "1. **Identify:** the LLM reads the error and the function index, and picks the functions most "
+            "likely responsible.\n"
+            "2. **Analyze:** it reads those functions' real source code and returns the root cause, debugging "
+            "steps, fixes and severity.\n"
+            "3. **Ticket (optional):** the analysis becomes a fully filled-in JIRA ticket."
+        )
+    if sample_index:
+        with st.expander(f"Browse the index ({summary.total_functions} functions)"):
+            st.dataframe(
+                [{"File": f.path, "Function": fn.name, "Description": fn.description}
+                 for f in sample_index.files for fn in f.functions],
+                hide_index=True,
+            )
 
-raw_json = st.text_area("Error log entry (JSON)", value=default_json, height=180)
-
-analyze_clicked = st.button("🧠 Analyze", type="primary")
-
+# ── Run the analysis ─────────────────────────────────────────────────────────
 if analyze_clicked:
     if not raw_json or not raw_json.strip():
         st.error("Paste a JSON error log entry first.")
@@ -198,45 +210,56 @@ if analyze_clicked:
     )
 
     try:
-        with st.spinner("Running two-step LLM analysis..."):
-            analyzer = TwoStepAnalyzer(index=st.session_state.index)
-            if st.session_state.index is not None:
-                analyzed = asyncio.run(analyzer.analyze(event))
-            else:
-                analyzed = asyncio.run(analyzer.analyze_without_index(event))
-            st.session_state.result = analyzed
-            st.session_state.jira_ticket = None  # new analysis — clear any ticket from a previous one
+        start = time.perf_counter()
+        with st.spinner("Running the two-step LLM analysis..."):
+            analyzer = TwoStepAnalyzer(index=index)
+            analyzed = asyncio.run(analyzer.analyze(event) if index else analyzer.analyze_without_index(event))
+        st.session_state.result = analyzed
+        st.session_state.run_meta = {"seconds": time.perf_counter() - start, "mode": "Index" if index else "Error-only"}
+        st.session_state.jira_ticket = None  # new analysis — clear any ticket from a previous one
     except Exception as exc:
         st.error(f"Analysis failed: {exc}")
         st.session_state.result = None
 
-result = st.session_state.result
+# ── Results ──────────────────────────────────────────────────────────────────
+result, meta = st.session_state.result, st.session_state.run_meta
 if result:
     st.divider()
-    sev_color = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(result.step2.severity, "⚪")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Severity", f"{sev_color} {result.step2.severity}")
-    c2.metric("Confidence", f"{result.step2.confidence_score:.0%}")
-    c3.metric("Suspected functions", len(result.step1.suspected_functions) or "—")
+    st.subheader("Analysis result")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Severity", result.step2.severity.title())
+    m2.metric("Confidence", f"{result.step2.confidence_score:.0%}")
+    m3.metric("Suspected functions", len(result.step1.suspected_functions) or "—")
+    m4.metric("Analysis time", f"{meta['seconds']:.1f} s" if meta else "—")
+    m5.metric("Mode", meta["mode"] if meta else "—")
 
-    st.subheader("Root cause")
-    st.write(result.step2.root_cause)
+    col_a, col_b = st.columns(2, gap="large")
+    with col_a:
+        st.markdown("**Root cause**")
+        with st.container(border=True):
+            st.markdown(result.step2.root_cause)
+        st.markdown("**Technical explanation**")
+        st.markdown(result.step2.technical_explanation)
+    with col_b:
+        st.markdown("**Debugging steps**")
+        st.markdown("\n".join(f"- {step}" for step in result.step2.debugging_steps))
+        st.markdown("**Possible fixes**")
+        for fix in result.step2.possible_fixes:
+            st.markdown(f"- {fix}")
 
-    st.subheader("Technical explanation")
-    st.write(result.step2.technical_explanation)
-
-    st.subheader("Debugging steps")
-    for step in result.step2.debugging_steps:
-        st.markdown(f"- {step}")
-
-    st.subheader("Possible fixes")
-    for fix in result.step2.possible_fixes:
-        st.markdown(f"- {fix}")
-
-    if result.step1.suspected_functions:
-        with st.expander(f"Suspected functions ({len(result.step1.suspected_functions)})"):
-            st.write(", ".join(result.step1.suspected_functions))
-            st.caption(result.step1.reasoning)
+    # Show the real source of the suspected functions when the index was used
+    fn_map = {fn.name: (fn, f.path) for f in sample_index.files for fn in f.functions} \
+        if (sample_index and meta and meta["mode"] == "Index") else {}
+    suspects = [name for name in result.step1.suspected_functions if name in fn_map]
+    if suspects:
+        st.markdown("**Suspect code (from the index)**")
+        st.caption(result.step1.reasoning)
+        for name in suspects:
+            fn, path = fn_map[name]
+            with st.expander(f"{name} · {path} (lines {fn.start_line}–{fn.end_line})"):
+                st.code(fn.source_code, language="python" if path.endswith(".py") else None)
+    elif result.step1.suspected_functions:
+        st.caption("Suspected (from the traceback): " + ", ".join(result.step1.suspected_functions))
 
     if result.step2.affected_components:
         st.caption("Affected components: " + ", ".join(result.step2.affected_components))
@@ -250,7 +273,7 @@ if result:
     elif not jira_configured:
         st.info("Fill in your JIRA credentials in the sidebar to create a real ticket from this analysis.")
     else:
-        if st.button("🎫 Create JIRA Ticket"):
+        if st.button("Create JIRA ticket"):
             try:
                 with st.spinner("Creating ticket..."):
                     jira = JiraClient(
